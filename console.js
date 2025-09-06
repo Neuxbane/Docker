@@ -1856,12 +1856,14 @@ import pty from 'node-pty';
 const PORT = process.env.PORT || 3333;
 const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 const USE_HTTPS = process.env.USE_HTTPS === 'true';
+// binding address for servers; default to loopback for safety
+const BIND_ADDR = process.env.BIND_ADDR || '127.0.0.1';
 
 if (!process.env.SINGLE_RUN) {
 	// Start HTTP server
 	const httpServer = http.createServer(app);
-	httpServer.listen(PORT, () => {
-		log('HTTP server listening on http://localhost:' + PORT);
+	httpServer.listen(PORT, BIND_ADDR, () => {
+		log('HTTP server listening on http://' + BIND_ADDR + ':' + PORT);
 	});
 
 	// WebSocket server for terminal attach proxy
@@ -2123,8 +2125,8 @@ if (!process.env.SINGLE_RUN) {
 			};
 			
 			const httpsServer = https.createServer(httpsOptions, app);
-			httpsServer.listen(HTTPS_PORT, () => {
-				log('HTTPS server listening on https://localhost:' + HTTPS_PORT);
+			httpsServer.listen(HTTPS_PORT, BIND_ADDR, () => {
+				log('HTTPS server listening on https://' + BIND_ADDR + ':' + HTTPS_PORT);
 			});
 		} else {
 			log('HTTPS enabled but SSL certificates not found at', keyPath, 'and', certPath);

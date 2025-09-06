@@ -6,7 +6,7 @@ Summary:
 
 How it works:
 - Open a project -> Edit. Click "Add Service".
-- Fill the service name and optional image, ports (host:container or container), volumes (host:container), and environment entries (KEY=VALUE).
+- Fill the service name and optional image, ports (host:container or container), volumes (host:container), and environment entries.
 - The new service is added locally in the editor. Click "Apply changes" to persist the change.
 
 Backend:

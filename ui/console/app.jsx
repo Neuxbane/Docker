@@ -783,7 +783,7 @@ function ServiceEditor({svcName, svcData, onChange, onEditConfig, projectPath}){
       </div>
 
       <div className="mt-3">
-        <div className="text-sm text-gray-700">Environment (KEY=VALUE)</div>
+        <div className="text-sm text-gray-700">Environment</div>
         {environment.map((env,i)=> (
           <div key={i} className="flex gap-2 mt-1 items-center">
             <input className="border rounded px-2 py-1 w-1/2" value={env.key} onChange={ev=>updateEnvKey(i, ev.target.value)} placeholder="KEY" />
