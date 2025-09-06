@@ -2135,7 +2135,17 @@ function NginxEditor({mapper, showNotification}){
 
           const svs = (parsed.servers || []).map(s => {
             const listen = s.listen || '';
-            const port = String(listen).split(' ')[0] || '80';
+            // listen may be like "443 ssl" or "127.0.0.1:443 ssl" - extract port and ssl flag
+            let port = '80';
+            try {
+              const parts = String(listen).split(/\s+/).filter(Boolean);
+              // first part may contain host:port or just port
+              const first = parts[0] || '';
+              if (first.indexOf(':') !== -1) port = String(first).split(':').pop();
+              else if (/^\d+$/.test(first)) port = first;
+              // detect explicit ssl keyword
+              var detectedSsl = parts.slice(1).some(p => String(p).toLowerCase() === 'ssl');
+            } catch (e) { port = '80'; }
             const locs = (s.locations || []).map(l => {
               const proxy = l.proxy_pass || '';
               // try to detect upstream name inside proxy_pass (e.g. http://template_core/)
@@ -2150,7 +2160,9 @@ function NginxEditor({mapper, showNotification}){
               if (l.redirect) return { location: l.location || '/', upstream: '', type: 'redirect', redirect: l.redirect, useUri: false, raw: l.raw || '' };
               return { location: l.location || '/', upstream: matched || '', type: 'proxy', useUri: (proxy||'').endsWith('/'), raw: l.raw || '' };
             });
-            return { servername: s.server_name || '', port, ssl: !!s.ssl, sslcert: s.ssl_certificate || '', sslkey: s.ssl_certificate_key || '', locations: locs.length?locs:[{ location: '/', upstream: '', useUri: true, raw: '', showRaw: false }] };
+            // also treat presence of ssl_certificate or ssl_certificate_key as enabling ssl
+            const hasCert = !!(s.ssl_certificate || s.ssl_certificate_key);
+            return { servername: s.server_name || '', port, ssl: (!!s.ssl) || detectedSsl || hasCert, sslcert: s.ssl_certificate || '', sslkey: s.ssl_certificate_key || '', locations: locs.length?locs:[{ location: '/', upstream: '', useUri: true, raw: '', showRaw: false }] };
           });
           setServers(svs);
         }
@@ -2185,14 +2197,10 @@ function NginxEditor({mapper, showNotification}){
       // servers
       for (const s of servers) {
         lines.push('server {');
-        if (s.ssl) {
-          lines.push(`  listen ${escape(s.port)} ssl;`);
-          if (s.sslcert) lines.push(`  ssl_certificate ${escape(s.sslcert)};`);
-          if (s.sslkey) lines.push(`  ssl_certificate_key ${escape(s.sslkey)};`);
-        } else {
-          lines.push(`  listen ${escape(s.port)};`);
-        }
+        // server_name should appear first inside the server block
         if (s.servername) lines.push(`  server_name ${escape(s.servername)};`);
+
+        // then the locations
         for (const loc of s.locations || []){
           const upstream = loc.upstream || '';
           const slash = loc.useUri ? '/' : '';
@@ -2206,6 +2214,18 @@ function NginxEditor({mapper, showNotification}){
           lines.push(`    access_log /var/log/nginx/comm.log comm;`);
           lines.push('  }');
         }
+
+        // ssl directives (certificate/key) should come after locations
+        if (s.ssl && s.sslcert) lines.push(`  ssl_certificate ${escape(s.sslcert)};`);
+        if (s.ssl && s.sslkey) lines.push(`  ssl_certificate_key ${escape(s.sslkey)};`);
+
+        // finally the listen directive (include ssl flag if applicable)
+        if (s.ssl) {
+          lines.push(`  listen ${escape(s.port)} ssl;`);
+        } else {
+          lines.push(`  listen ${escape(s.port)};`);
+        }
+
         lines.push('}', '');
       }
       return lines.join('\n');

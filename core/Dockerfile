@@ -13,6 +13,7 @@ ENV PATH=$MINICONDA_PATH/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gnupg software-properties-common net-tools nmap \
     openssh-server nginx wget nano mc ca-certificates \
+    htop iputils-ping sudo \
     && add-apt-repository ppa:ondrej/php \
     && apt-get update && apt-get install -y --no-install-recommends \
     php8.4 php8.4-fpm php8.4-cli php8.4-bcmath php8.4-bz2 php8.4-curl \

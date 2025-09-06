@@ -2162,10 +2162,12 @@ app.get('/api/stats', async (req, res) => {
 		// Load mapper to map IPs to project names
 		const mapper = readMapperFile() || {};
 		const ipToProject = {};
-		
-		// Build IP to project name mapping
+		const projectNames = new Set();
+
+		// Build IP to project name mapping and collect known project names
 		for (const [projectPath, projectData] of Object.entries(mapper)) {
 			const projectName = path.basename(projectPath);
+			projectNames.add(projectName);
 			for (const [serviceName, serviceData] of Object.entries(projectData.services || {})) {
 				if (serviceData.networks && serviceData.networks['neuxbane-core-net']) {
 					const networkConfig = serviceData.networks['neuxbane-core-net'];
@@ -2203,45 +2205,62 @@ app.get('/api/stats', async (req, res) => {
 		}
 		
 		for (const line of allLines) {
-			// nginx log format: ip - - [timestamp] "METHOD /path HTTP/version" status size "referer" "user-agent" "upstream_addr"
-			const match = line.match(/\[([^\]]+)\] "(?:GET|HEAD|POST|PUT|DELETE|OPTIONS) ([^"]*?) HTTP[^"]*" ([0-9]+) [0-9-]+ "[^"]*" "[^"]*" "([^"]*)"$/);
-			if (match) {
-				const timeStr = match[1];
-				const request = match[2];
-				const upstreamAddr = match[4];
-				
-				// Parse nginx timestamp format: DD/MMM/YYYY:HH:MM:SS +0000
-				const dateMatch = timeStr.match(/(\d{2})\/(\w{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2}) \+0000/);
+			// attempt to parse common nginx log patterns
+			// Examples:
+			// 127.0.0.1 - - [06/Sep/2025:12:34:56 +0000] "GET /path HTTP/1.1" 200 123 "-" "ua" "172.28.0.2:80"
+			// 127.0.0.1 - - [06/Sep/2025:12:34:56 +0200] "GET /path HTTP/1.1" 200 123 "-" "ua"
+			try {
+				// Extract timestamp (between first [ and ])
+				const tsMatch = line.match(/\[([^\]]+)\]/);
+				if (!tsMatch) continue;
+				const timeStr = tsMatch[1];
+
+				// Extract request "METHOD /path HTTP/..."
+				const reqMatch = line.match(/\"(?:GET|HEAD|POST|PUT|DELETE|OPTIONS|PATCH) ([^\s]+)[^\"]*\"/i);
+				if (!reqMatch) continue;
+				const request = reqMatch[1];
+
+				// Try to find an upstream address at end if present (in quotes) - optional
+				let upstreamAddr = null;
+				const parts = line.split('"');
+				if (parts.length >= 7) {
+					// common combined format has upstream in the last quoted field
+					upstreamAddr = parts[parts.length - 2] || null;
+				}
+
+				// Parse timestamp like: 06/Sep/2025:12:34:56 +0000 or with other timezone offsets
+				const dateMatch = timeStr.match(/(\d{1,2})\/(\w{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})\s*([+-]\d{4})?/);
 				if (!dateMatch) continue;
-				
 				const [, day, month, year, hour, minute, second] = dateMatch;
 				const monthNames = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-				const monthNum = monthNames[month];
+				const monthNum = monthNames[month] || 0;
 				const time = new Date(year, monthNum, day, hour, minute, second).getTime();
-				
+
 				if (time >= startTime) {
-					let service = 'unknown';
-					
-					// Try to map upstream IP to project name
+					// Determine project name for this request. Prefer upstream IP mapping.
+					let project = null;
 					if (upstreamAddr && upstreamAddr !== '-') {
-						const ip = upstreamAddr.split(':')[0]; // Extract IP from "172.28.0.2:80"
-						if (ipToProject[ip]) {
-							service = ipToProject[ip];
-						} else {
-							// Fallback to path-based detection if IP mapping fails
-							service = request.split('/')[1] || 'unknown';
-						}
-					} else {
-						// Fallback to path-based detection
-						service = request.split('/')[1] || 'unknown';
+						const ip = (upstreamAddr || '').split(':')[0];
+						if (ipToProject[ip]) project = ipToProject[ip];
 					}
-					
-					if (!services[service]) services[service] = new Array(timeSlots.length).fill(0);
+					// Fallback: use first path segment only if it matches a known project name
+					if (!project) {
+						const candidate = (request.split('/')[1] || '').trim();
+						if (candidate && projectNames.has(candidate)) project = candidate;
+					}
+
+					// Only count requests that map to a known project
+					if (!project) continue;
+
+					if (!services[project]) services[project] = new Array(timeSlots.length).fill(0);
 					const slotIndex = Math.floor((time - startTime) / intervalMs);
-					if (slotIndex < timeSlots.length) {
-						services[service][slotIndex]++;
+					if (slotIndex >= 0 && slotIndex < timeSlots.length) {
+						services[project][slotIndex]++;
 					}
 				}
+			} catch (e) {
+				// ignore malformed lines
+				continue;
 			}
 		}
 		
@@ -2256,7 +2275,7 @@ app.get('/api/stats', async (req, res) => {
 
 // simple auth
 const sessions = new Map();
-const ADMIN_PASS = process.env.ADMIN_PASSWORD || 'change_this_default_password_immediately'; // Use environment variable
+const ADMIN_PASS = process.env.ADMIN_PASSWORD || '塮䀿萊䚿䒾㺵䩟劅僎蔤ꉏ么잤쏮⦷肝㢣沈ᆫ䛞切ⴚ圂㉱隼瀛⟍续蹺茼⩈搲㵛ꖤ∲䨉'; // Use environment variable
 
 // Rate limiting for authentication attempts
 const authAttempts = new Map();
