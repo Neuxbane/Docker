@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSP Test</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>CSP Test Page</h1>
+    <p>If you can see this, CSP is working correctly!</p>
+    <div id="test">Testing external scripts...</div>
+    <script>
+        document.getElementById('test').innerHTML = 'External scripts loaded successfully!';
+        console.log('React version:', React ? React.version : 'Not loaded');
+        console.log('Axios loaded:', typeof axios);
+        console.log('Chart.js loaded:', typeof Chart);
+    </script>
+</body>
+</html>

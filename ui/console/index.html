@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Docker Mapper Console</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- load React + Babel for a tiny dev UI -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <!-- Tailwind via CDN (for dev) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Ace editor for in-browser syntax highlighting (served from jsdelivr to comply with CSP) -->
+  <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.9.6/src-min-noconflict/ace.js"></script>
+  <!-- xterm.js for web terminal -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+    <style>
+      body { padding: 20px; }
+      .ace-editor { height: 60vh; width: 100%; }
+    </style>
+  </head>
+  <body class="bg-slate-50 text-slate-800">
+    <div id="root">
+      <div id="loading-root" class="min-h-screen flex items-center justify-center">
+        <div class="w-full max-w-md bg-white/90 backdrop-blur-sm border border-slate-200 rounded-lg shadow-lg p-6 text-center">
+          <img src="/logo.png" alt="logo" onerror="this.style.display='none'" class="mx-auto mb-4 h-16 w-16 object-contain"/>
+          <h1 class="text-2xl font-semibold mb-2">Docker Mapper Console</h1>
+          <p class="text-sm text-slate-500 mb-4">Preparing the console — connecting services...</p>
+
+          <div aria-hidden="true" class="mb-4">
+            <div id="spinner" class="mx-auto w-12 h-12 border-4 border-slate-200 border-t-slate-500 rounded-full animate-spin"></div>
+          </div>
+
+          <div class="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+            <div id="progress" class="h-3 bg-sky-500 w-0 transition-all"></div>
+          </div>
+          <div id="progress-text" class="text-xs text-slate-500 mt-2">Starting...</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Simple progress animation until the real app replaces the content.
+      (function(){
+        const progressEl = document.getElementById('progress');
+        const progressText = document.getElementById('progress-text');
+        let value = 0;
+        const step = () => {
+          if (value >= 98) return;
+          value += Math.random() * 6 + 2;
+          if (value > 98) value = 98;
+          progressEl.style.width = value + '%';
+          progressText.textContent = Math.round(value) + '% — loading modules...';
+          setTimeout(step, 300 + Math.random()*400);
+        };
+        step();
+
+        // When the real app script fires its DOM mount, it should call window.__appReady();
+        window.__appReady = function(){
+          progressEl.style.width = '100%';
+          progressText.textContent = 'Complete — launching console';
+          setTimeout(()=>{
+            const root = document.getElementById('root');
+            // Let the app.jsx take over by leaving the root element for it to render into.
+          }, 300);
+        };
+
+        // Fallback: if app.jsx hasn't signalled readiness after 8s, show a message.
+        setTimeout(()=>{
+          if (value < 99) {
+            progressText.textContent = 'Still starting — waiting for app...';
+          }
+        }, 8000);
+      })();
+    </script>
+
+    <script type="text/babel" src="/app.jsx"></script>
+  </body>
+</html>

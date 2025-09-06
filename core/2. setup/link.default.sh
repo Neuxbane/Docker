@@ -1,0 +1,1 @@
+sudo ln -s "$(pwd)/../default.conf" /etc/nginx/sites-enabled/default

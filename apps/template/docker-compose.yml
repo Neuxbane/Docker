@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  core:
+    ports: []
+    image: neuxbane-core:latest
+    restart: unless-stopped
+    volumes:
+      - ./config/init.sh:/init.sh:ro
+      - ./config/default.conf:/etc/nginx/sites-enabled/default:ro
+      - ./private:/workspace
+      - ./public:/var/www/html
+    environment: []
+    networks:
+      neuxbane-core-net:
+        ipv4_address: 172.28.0.3
+networks:
+  neuxbane-core-net:
+    external: true
+    name: neuxbane-core-net

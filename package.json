@@ -1,0 +1,16 @@
+{
+  "name": "docker-mapper-console",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Auto scanner for docker-compose folders resolving port/IP conflicts and generating mapper.js",
+  "main": "console.js",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.8.1"
+  }
+}
