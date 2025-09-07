@@ -14,15 +14,35 @@
         ],
         "environment": [],
         "networks": {
-          "neuxbane-core-net": "172.28.0.2"
+          "neuxbane-core-net": "172.28.0.3"
         }
       }
     }
   },
-  "/root/Docker/apps/univ_schedule": {
-    "file": "/root/Docker/apps/univ_schedule/docker-compose.yml",
+  "/root/Docker/apps/tools": {
+    "file": "/root/Docker/apps/tools/docker-compose.yml",
     "services": {
       "core": {
+        "ports": [],
+        "image": "neuxbane-core:latest",
+        "restart": "unless-stopped",
+        "volumes": [
+          "./config/init.sh:/init.sh:ro",
+          "./config/default.conf:/etc/nginx/sites-enabled/default:ro",
+          "./private:/workspace",
+          "./public:/var/www/html"
+        ],
+        "environment": [],
+        "networks": {
+          "neuxbane-core-net": "172.28.0.5"
+        }
+      }
+    }
+  },
+  "/root/Docker/apps/university": {
+    "file": "/root/Docker/apps/university/docker-compose.yml",
+    "services": {
+      "krsplan": {
         "ports": [],
         "image": "neuxbane-core:latest",
         "restart": "unless-stopped",

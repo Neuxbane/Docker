@@ -1253,6 +1253,29 @@ function EditorModal({path, data, onClose, onApply, onEditConfig, showNotificati
                     if (!win) console.warn('Popup blocked: unable to open inspect terminal window');
                   } catch(e){ console.warn('open inspect failed', e); }
                 }}>Inspect</button>
+                {/* Log: show only when service has a static IPv4 in networks */}
+                {(() => {
+                  let ip = '';
+                  try {
+                    const nets = (info && info.networks) ? Object.values(info.networks) : [];
+                    if (nets && nets.length > 0) {
+                      const first = nets[0];
+                      if (typeof first === 'string') ip = first;
+                      else if (first && typeof first === 'object') ip = first.ipv4_address || first.ipv4Address || '';
+                    }
+                  } catch (e) {}
+                  const hasIp = ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip);
+                  if (!hasIp) return null;
+                  return (
+                    <button className="px-2 py-1 bg-sky-600 text-white rounded" onClick={() => {
+                      try {
+                        const url = '/terminal.html?' + new URLSearchParams({ file: path, service: svc, action: 'log', ip }).toString();
+                        const win = window.open(url, '_blank', 'width=900,height=500,noopener');
+                        if (!win) console.warn('Popup blocked: unable to open log window');
+                      } catch (e) { console.warn('open log failed', e); }
+                    }}>Log</button>
+                  );
+                })()}
                 <button 
                   className={`px-2 py-1 rounded ${(data.services && data.services[svc] && data.services[svc].status === 'running') ? 'bg-indigo-600 text-white' : 'bg-gray-400 text-white cursor-not-allowed'}`} 
                   onClick={()=>{
@@ -2210,6 +2233,15 @@ function NginxEditor({mapper, showNotification}){
             lines.push(`    return 301 ${escape(loc.redirect)};`);
           } else if (upstream) {
             lines.push(`    proxy_pass http://${escape(upstream)}${slash};`);
+            // WebSocket support (safe for normal HTTP too)
+            lines.push(`    proxy_http_version 1.1;`);
+            lines.push(`    proxy_set_header Upgrade $http_upgrade;`);
+            lines.push(`    proxy_set_header Connection "upgrade";`);
+            lines.push(`    proxy_set_header Host $host;`);
+            // Longer timeouts to keep interactive sessions open
+            lines.push(`    proxy_read_timeout 3600;`);
+            lines.push(`    proxy_send_timeout 3600;`);
+            lines.push(`    proxy_connect_timeout 60;`);
           }
           lines.push(`    access_log /var/log/nginx/comm.log comm;`);
           lines.push('  }');
@@ -2306,8 +2338,18 @@ function NginxEditor({mapper, showNotification}){
                   <div className="flex gap-2 items-center">
                     <input placeholder="location" value={loc.location} onChange={e=>{ const next=[...servers]; next[i].locations[li].location=e.target.value; setServers(next); }} className="border px-2 py-1" />
                     <select value={loc.upstream || (loc.type === 'redirect' ? 'redirect' : '')} onChange={e=>{ const next=[...servers]; const val=e.target.value; // if user selects 'redirect', clear upstream and set type
-                      if (val === 'redirect') { next[i].locations[li].upstream = ''; next[i].locations[li].type = 'redirect'; next[i].locations[li].redirect = next[i].locations[li].redirect || ''; }
-                      else { next[i].locations[li].upstream = val; next[i].locations[li].type = 'proxy'; }
+                      if (val === 'redirect') {
+                        next[i].locations[li].upstream = '';
+                        next[i].locations[li].type = 'redirect';
+                        next[i].locations[li].redirect = next[i].locations[li].redirect || '';
+                      } else {
+                        // selecting an upstream should clear any previous redirect value
+                        next[i].locations[li].upstream = val;
+                        next[i].locations[li].type = 'proxy';
+                        next[i].locations[li].redirect = '';
+                        // ensure useUri has a sensible default when switching to proxy
+                        if (typeof next[i].locations[li].useUri === 'undefined') next[i].locations[li].useUri = true;
+                      }
                       setServers(next);
                     }} className="border px-2 py-1">
                       <option value="">upstream</option>

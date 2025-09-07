@@ -520,7 +520,7 @@ app.use((req, res, next) => {
 	res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 	// Note: allowing 'unsafe-inline' for styles is a pragmatic choice for the local UI (Babel/React/xterm
 	// inject inline styles). Consider replacing with nonces or hashes for production.
-	res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com https://cdn.jsdelivr.net; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://fonts.googleapis.com; style-src-attr 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://unpkg.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';");
+	res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com https://cdn.jsdelivr.net; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://fonts.googleapis.com; style-src-attr 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://unpkg.com ws: wss:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';");
 	next();
 });
 app.use(express.json());
@@ -1880,7 +1880,7 @@ if (!process.env.SINGLE_RUN) {
 				const params = urlParts.searchParams;
 				const file = params.get('file');
 				const svc = params.get('service');
-				const action = params.get('action'); // optional: 'restart' or 'stop'
+				const action = params.get('action'); // optional: 'restart' | 'stop' | 'inspect' | 'log'
 				if (!file || !svc) {
 					ws.send(JSON.stringify({ error: 'missing file or service' }));
 					ws.close();
@@ -2010,6 +2010,56 @@ if (!process.env.SINGLE_RUN) {
 								// cleanup when ws closes
 								ws.on('close', () => { onCloseCleanup(); if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; } if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } });
 							})();
+							return;
+						}
+
+						// New: live nginx comm.log stream filtered by service IP (action=log&ip=...)
+						if (action === 'log') {
+							let rawIp = params.get('ip') || '';
+							const isIpv4 = (s) => /^\d+\.\d+\.\d+\.\d+$/.test(String(s||'').trim());
+							// If ip missing/invalid, try to resolve from mapper.json using project dir and service name
+							if (!isIpv4(rawIp)) {
+								try {
+									const mapper = readMapperFile() || {};
+									const projectDir = path.dirname(composeFile);
+									const entry = mapper[projectDir] || mapper[projectDir.replace(/\\/g, '/')] || null;
+									if (entry && entry.services && entry.services[svc]) {
+										const svcNet = entry.services[svc].networks || {};
+										// try common network key neuxbane-core-net or take first network value
+										let candidate = null;
+										if (svcNet['neuxbane-core-net']) candidate = svcNet['neuxbane-core-net'];
+										else {
+											const vals = Object.values(svcNet || {});
+											if (vals.length > 0) candidate = vals[0];
+										}
+										if (candidate) {
+											if (typeof candidate === 'string') rawIp = candidate;
+											else if (candidate && typeof candidate === 'object') rawIp = candidate.ipv4_address || candidate.ipv4Address || '';
+										}
+									}
+								} catch (e) {
+									// ignore
+								}
+							}
+							if (!isIpv4(rawIp)) { try { ws.send(JSON.stringify({ error: 'invalid or missing ip' })); } catch(e){} ws.close(); globalThis.activeTerminalCount = Math.max(0, (globalThis.activeTerminalCount||0) - 1); return; }
+							const cmd = 'bash';
+							// Use stdbuf to force line-buffered grep so logs stream in realtime
+							// match the upstream field which is quoted and may include a port (e.g. "172.28.0.4:80")
+							const escapedIp = String(rawIp).replace(/\./g, '\\.') ;
+							const tailCmd = `if [ -r /var/log/nginx/comm.log ]; then tail -n 500 -F /var/log/nginx/comm.log | stdbuf -oL -eL grep -E --line-buffered '\"${escapedIp}(:[0-9]+)?\"'; else echo "comm.log not found or not readable"; fi`;
+							let term = null;
+							try { term = pty.spawn(cmd, ['-lc', tailCmd], { name: 'xterm-color', cols: 80, rows: 24, env: process.env, cwd: process.cwd() }); }
+							catch (e) { try { ws.send(JSON.stringify({ error: 'failed to spawn log stream' })); } catch(e2){} try { ws.close(); } catch(e3){} globalThis.activeTerminalCount = Math.max(0, (globalThis.activeTerminalCount||0) - 1); return; }
+							try { ws.send(`\r\n\x1b[36mFollowing nginx comm.log for IP ${rawIp} (last 500 lines then live)\x1b[0m\r\n`); } catch(e){}
+							term.onData(d => { try { ws.send(d); } catch(e){} });
+							let sessionClosed = false;
+							const onCloseCleanup = () => { if (sessionClosed) return; sessionClosed = true; try { term.kill(); } catch(e){} try { globalThis.activeTerminalCount = Math.max(0, (globalThis.activeTerminalCount||0) - 1); } catch(e){} log('log stream closed, activeTerminalCount=' + globalThis.activeTerminalCount); };
+							term.on('exit', () => { onCloseCleanup(); try { ws.close(); } catch(e){} });
+							ws.on('message', msg => {
+								// allow optional resize messages from terminal.html, ignore other input
+								try { const s = msg.toString(); if (s[0] === '{') { const obj = JSON.parse(s); if (obj && obj.type === 'resize' && obj.cols && obj.rows) { try { term.resize(Number(obj.cols), Number(obj.rows)); } catch(e){} } } } catch(e){}
+							});
+							ws.on('close', () => { onCloseCleanup(); });
 							return;
 						}
 						if (action === 'restart' || action === 'stop') {

@@ -28,8 +28,14 @@
         const file = p.get('file');
         const service = p.get('service');
         const statusEl = document.getElementById('status');
+        const ip = p.get('ip');
+        const action = p.get('action');
         if(!file || !service){
           statusEl.textContent = 'Missing file or service param';
+          return;
+        }
+        if (action === 'log' && (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip))) {
+          statusEl.textContent = 'Missing or invalid ip param for log action';
           return;
         }
         statusEl.textContent = 'Project: ' + service;
@@ -79,8 +85,9 @@
 
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const params = { file, service };
-  const action = p.get('action');
   if (action) params.action = action;
+  // include ip when present so backend receives it
+  if (ip) params.ip = ip;
   const qs = new URLSearchParams(params).toString();
   const wsUrl = protocol + '://' + window.location.host + '/ws/attach?' + qs;
         const ws = new WebSocket(wsUrl);
