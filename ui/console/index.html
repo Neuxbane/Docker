@@ -20,6 +20,23 @@
     <style>
       body { padding: 20px; }
       .ace-editor { height: 60vh; width: 100%; }
+      /* Prevent horizontal scrolling caused by long lines and force wrapping */
+      html, body {
+        overflow-x: hidden;
+      }
+      pre, code, .font-mono, .ace_editor, .ace-editor {
+        white-space: pre-wrap !important; /* wrap long lines */
+        word-break: break-word !important;
+        overflow-wrap: anywhere !important;
+      }
+      /* Modal pre blocks should scroll vertically and wrap long lines */
+      .modal-pre, .modal-pre pre {
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+        overflow-wrap: anywhere !important;
+        max-height: 48vh;
+        overflow-y: auto;
+      }
     </style>
   </head>
   <body class="bg-slate-50 text-slate-800">

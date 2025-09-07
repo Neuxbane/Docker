@@ -1580,6 +1580,92 @@ function AddProjectModal({onClose, onAdd, mapper}){
   );
 }
 
+function DeleteImageModal({imageName, onClose, onDelete}){
+  const [confirmName, setConfirmName] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [output, setOutput] = useState('');
+  const [showOutput, setShowOutput] = useState(false);
+  const error = confirmName !== imageName ? 'Name does not match' : '';
+
+  async function handleDelete() {
+    if (error || deleting) return;
+    setDeleting(true);
+    setOutput('');
+    setShowOutput(true);
+    
+    try {
+      // Call the delete function and capture output
+      const result = await onDelete(imageName);
+      setOutput((result && result.output) || 'Image deleted successfully');
+    } catch (e) {
+      setOutput('Error: ' + ((e && e.response && e.response.data && e.response.data.error) || (e && e.message) || String(e)));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (showOutput) {
+    return (
+      <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+        <div className="bg-white rounded w-3/4 max-w-2xl p-4">
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-lg font-semibold">Deleting Image: {imageName}</div>
+            <button className="text-sm text-gray-600" onClick={()=>{setShowOutput(false); onClose();}}>Close</button>
+          </div>
+          <div className="mb-4">
+              <div className="bg-gray-100 border rounded p-3 font-mono text-sm max-h-96 overflow-y-auto modal-pre">
+              <pre className="modal-pre">{output}</pre>
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>{setShowOutput(false); onClose();}}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded w-1/2 p-4">
+        <div className="flex justify-between items-center mb-4">
+          <div className="text-lg font-semibold text-red-600">Delete Image</div>
+          <button className="text-sm text-gray-600" onClick={onClose}>Close</button>
+        </div>
+        <div className="mb-4">
+          <div className="text-sm text-gray-700 mb-2">
+            Are you sure you want to delete the image <strong>{imageName}</strong>?
+          </div>
+          <div className="text-sm text-red-600 mb-4">
+            This action cannot be undone. The image will be permanently deleted if not in use.
+          </div>
+          <label className="block text-sm font-medium mb-2">
+            Type <strong>{imageName}</strong> to confirm:
+          </label>
+          <input
+            type="text"
+            className="border rounded px-3 py-2 w-full"
+            value={confirmName}
+            onChange={e => setConfirmName(e.target.value)}
+            placeholder={`Type ${imageName} to confirm`}
+          />
+          {error && <div className="text-sm text-red-600 mt-1">{error}</div>}
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button className="px-3 py-1 bg-gray-200 rounded" onClick={onClose}>Cancel</button>
+          <button
+            className={`px-3 py-1 rounded ${error || deleting ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-600 text-white'}`}
+            onClick={handleDelete}
+            disabled={!!error || deleting}
+          >
+            {deleting ? 'Deleting...' : 'Delete Image'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const [mapper, setMapper] = useState({});
   const [loading, setLoading] = useState(true);
@@ -1738,6 +1824,22 @@ function App(){
     setLoggedIn(false);
     setView('public');
   }
+
+  // Axios interceptor for handling 401
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      response => response,
+      error => {
+        if (error.response && error.response.status === 401) {
+          logout();
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
+  }, []);
 
   useEffect(() => {
     if (view === 'public' && Object.keys(publicMapper).length > 0) {
@@ -2514,6 +2616,7 @@ function NetworkList({ showNotification }){
 function ImageDetailsModal({imageName, usage, onClose, onDelete, showNotification, services = [], onOpenProject}){
   const [pulling, setPulling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   if (!imageName) return null;
 
@@ -2571,13 +2674,25 @@ function ImageDetailsModal({imageName, usage, onClose, onDelete, showNotificatio
           })()}
         </div>
         <div className="flex gap-2 justify-end">
-          <button className={`px-3 py-1 rounded ${deleting ? 'bg-gray-400' : 'bg-red-600 text-white'}`} onClick={async ()=>{
-            if (deleting) return;
-            if (!window.confirm('Delete image '+imageName+'? This may fail if image is in use.')) return;
-            try { setDeleting(true); await onDelete(imageName); showNotification && showNotification('Delete requested for '+imageName,'info'); } catch(e){ showNotification && showNotification('Delete failed: '+String(e),'error'); } finally { setDeleting(false); }
-          }} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button>
+          <button className={`px-3 py-1 rounded ${deleting ? 'bg-gray-400' : 'bg-red-600 text-white'}`} onClick={()=>{setShowDeleteModal(true);}} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button>
           <button className="px-3 py-1 bg-gray-200 rounded" onClick={onClose}>Close</button>
         </div>
+        {showDeleteModal && (
+          <DeleteImageModal
+            imageName={imageName}
+            onClose={()=>{setShowDeleteModal(false);}}
+            onDelete={async (img) => {
+              try {
+                const result = await onDelete(img);
+                showNotification && showNotification('Delete requested for '+img,'info');
+                return result;
+              } catch(e){
+                showNotification && showNotification('Delete failed: '+String(e),'error');
+                throw e;
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -2591,8 +2706,19 @@ function ImageList({ mapper, showNotification, onOpenProject }){
   const [remoteImages, setRemoteImages] = useState(() => {
     try { const v = localStorage.getItem('remoteImages'); return v ? JSON.parse(v) : []; } catch(e){ return []; }
   });
+  const [allImages, setAllImages] = useState([]);
 
   useEffect(()=>{ buildImages(); }, [mapper]);
+  useEffect(()=>{ fetchAllImages(); }, []);
+
+  function fetchAllImages(){
+    axios.get('/api/images/list').then(r => {
+      setAllImages(r.data.images || []);
+    }).catch(e => {
+      console.error('Failed to fetch all images:', e);
+      setAllImages([]);
+    });
+  }
 
   function buildImages(){
     // map image -> { online: count, offline: count, services: [{project, service, status}] }
@@ -2613,11 +2739,20 @@ function ImageList({ mapper, showNotification, onOpenProject }){
   }
 
   async function handlePull(image){
-  try { await axios.post('/api/images/pull', { image }); } catch(e){ throw e; }
+    try { 
+      await axios.post('/api/images/pull', { image });
+      // Refresh the all images list
+      fetchAllImages();
+    } catch(e){ throw e; }
   }
 
   async function handleDelete(image){
-    try { await axios.post('/api/images/delete', { image }); } catch(e){ throw e; }
+    try { 
+      const response = await axios.post('/api/images/delete', { image });
+      // Refresh the all images list
+      fetchAllImages();
+      return response.data;
+    } catch(e){ throw e; }
   }
 
   return (
@@ -2650,7 +2785,7 @@ function ImageList({ mapper, showNotification, onOpenProject }){
         </div>
       </div>
       {images.length===0 && <div className="text-gray-500">No images found</div>}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <div>
           <h3 className="text-sm font-semibold mb-2">Local Images</h3>
           {images.length===0 ? <div className="text-gray-500">No local images found</div> : (
@@ -2677,6 +2812,21 @@ function ImageList({ mapper, showNotification, onOpenProject }){
                 <div key={name} className="bg-white shadow rounded p-4 cursor-pointer" onClick={()=>setSelected({ name, online:0, offline:0, services: [], _source: 'remote' })}>
                   <div className="font-medium truncate">{name}</div>
                   <div className="text-xs text-gray-500 mt-1">Source: registry</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-semibold mb-2">All Docker Images</h3>
+          {allImages.length===0 ? <div className="text-gray-500">No Docker images found</div> : (
+            <div className="space-y-2">
+              {allImages.map(img => (
+                <div key={`${img.Repository}:${img.Tag}`} className="bg-white shadow rounded p-4 cursor-pointer" onClick={()=>setSelected({ name: `${img.Repository}:${img.Tag}`, online:0, offline:0, services: [], _source: 'docker' })}>
+                  <div className="font-medium truncate">{img.Repository}:{img.Tag}</div>
+                  <div className="text-xs text-gray-500 mt-1">Size: {img.Size}</div>
+                  <div className="text-xs text-gray-500">Created: {new Date(img.CreatedAt).toLocaleDateString()}</div>
                 </div>
               ))}
             </div>

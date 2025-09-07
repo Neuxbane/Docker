@@ -2395,6 +2395,64 @@ app.get('/api/stats', async (req, res) => {
 	}
 });
 
+// API for images
+app.post('/api/images/pull', async (req, res) => {
+	try {
+		const { image } = req.body;
+		if (!image || typeof image !== 'string') {
+			return res.status(400).json({ error: 'Image name required' });
+		}
+		// Run docker pull
+		execFile('docker', ['pull', image], (error, stdout, stderr) => {
+			if (error) {
+				return res.status(500).json({ error: `Failed to pull image: ${stderr || error.message}` });
+			}
+			res.json({ success: true, output: stdout });
+		});
+	} catch (e) {
+		res.status(500).json({ error: String(e) });
+	}
+});
+
+app.post('/api/images/delete', async (req, res) => {
+	try {
+		const { image } = req.body;
+		if (!image || typeof image !== 'string') {
+			return res.status(400).json({ error: 'Image name required' });
+		}
+		// Run docker rmi
+		execFile('docker', ['rmi', image], (error, stdout, stderr) => {
+			if (error) {
+				return res.status(500).json({ error: `Failed to delete image: ${stderr || error.message}` });
+			}
+			res.json({ success: true, output: stdout });
+		});
+	} catch (e) {
+		res.status(500).json({ error: String(e) });
+	}
+});
+
+app.get('/api/images/list', async (req, res) => {
+	try {
+		// Run docker images --format json
+		execFile('docker', ['images', '--format', 'json'], (error, stdout, stderr) => {
+			if (error) {
+				return res.status(500).json({ error: `Failed to list images: ${stderr || error.message}` });
+			}
+			try {
+				// Parse the JSON output
+				const lines = stdout.trim().split('\n').filter(line => line.trim());
+				const images = lines.map(line => JSON.parse(line)).filter(img => img.Repository !== '<none>');
+				res.json({ images });
+			} catch (parseError) {
+				res.status(500).json({ error: `Failed to parse images output: ${parseError.message}` });
+			}
+		});
+	} catch (e) {
+		res.status(500).json({ error: String(e) });
+	}
+});
+
 // simple auth
 const sessions = new Map();
 const ADMIN_PASS = process.env.ADMIN_PASSWORD || '塮䀿萊䚿䒾㺵䩟劅僎蔤ꉏ么잤쏮⦷肝㢣沈ᆫ䛞切ⴚ圂㉱隼瀛⟍续蹺茼⩈搲㵛ꖤ∲䨉'; // Use environment variable
