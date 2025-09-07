@@ -1912,18 +1912,31 @@ if (!process.env.SINGLE_RUN) {
 								const scriptPath = path.join(projectDirLocal, 'inspect.sh'); // optional project override for custom inspect behavior
 								let cmd = 'bash';
 								let args = ['-lc', 'echo "no-op"'];
+								// We'll use a firstRun flag so the first spawn gets --tail 500 (recent history),
+								// while subsequent respawns use --tail 0 -f so they don't resend previous history.
+								let firstRun = true;
 								if (fs.existsSync(scriptPath) && (fs.statSync(scriptPath).mode & 0o111)) {
 									// run project-provided inspect script which should be non-disruptive
+									// project scripts may not support tail semantics; call them the same each time
 									args = ['-lc', `${JSON.stringify(scriptPath)} ${JSON.stringify(svc)}`];
 								} else {
 									// default to following compose logs (non-disruptive)
-									const logsFollow = `docker compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 500 -f ${JSON.stringify(svc)}`;
-									const legacyLogsFollow = `docker-compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 500 -f ${JSON.stringify(svc)}`;
-									args = ['-lc', `${logsFollow} || ${legacyLogsFollow}`];
+									const logsFollowInit = `docker compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 500 -f ${JSON.stringify(svc)}`;
+									const legacyLogsFollowInit = `docker-compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 500 -f ${JSON.stringify(svc)}`;
+									const logsFollowRespawn = `docker compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 0 -f ${JSON.stringify(svc)}`;
+									const legacyLogsFollowRespawn = `docker-compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 0 -f ${JSON.stringify(svc)}`;
+									// default args are for initial spawn; spawnFollow will choose respawn args when firstRun=false
+									args = ['-lc', `${logsFollowInit} || ${legacyLogsFollowInit}`];
 								}
 								// spawn-follow loop: keep the websocket open and re-spawn the pty when logs exit
+								// Silent reconnect policy: when the follow process exits, quietly attempt to
+								// reconnect every 3 seconds in the background. Do not spam the client with
+								// repeated 'reconnecting' messages. Keep the socket open until the client
+								// explicitly closes it or the server decides to close for other reasons.
 								let sessionClosed = false;
 								let term = null;
+								// ensure we only notify the client once that the log stream paused
+								let pauseNotified = false;
 											// track last data time and monitor idle state
 											let lastDataAt = Date.now();
 											let monitorInterval = null;
@@ -1940,14 +1953,32 @@ if (!process.env.SINGLE_RUN) {
 								const spawnFollow = () => {
 									if (sessionClosed) return;
 									try {
-										term = pty.spawn(cmd, args, { name: 'xterm-color', cols: 80, rows: 24, env: execEnv, cwd: projectDirLocal });
+										// choose args based on whether this is the initial run or a respawn
+										let chosenArgs = args;
+										if (!firstRun && !(fs.existsSync(scriptPath) && (fs.statSync(scriptPath).mode & 0o111))) {
+											// Prefer requesting logs since the last received timestamp so that when the
+											// container restarts we catch lines produced during downtime without
+											// reprinting the whole history. Fallback to --tail 0 if lastDataAt missing.
+											let sincePart = '';
+											try {
+												if (lastDataAt) {
+													const iso = new Date(lastDataAt).toISOString();
+													sincePart = `--since ${JSON.stringify(iso)}`;
+												}
+											} catch (e) { sincePart = ''; }
+											const logsFollowRespawn = sincePart ? `docker compose -f ${JSON.stringify(composeFile)} logs --no-color ${sincePart} -f ${JSON.stringify(svc)}` : `docker compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 0 -f ${JSON.stringify(svc)}`;
+											const legacyLogsFollowRespawn = sincePart ? `docker-compose -f ${JSON.stringify(composeFile)} logs --no-color ${sincePart} -f ${JSON.stringify(svc)}` : `docker-compose -f ${JSON.stringify(composeFile)} logs --no-color --tail 0 -f ${JSON.stringify(svc)}`;
+											chosenArgs = ['-lc', `${logsFollowRespawn} || ${legacyLogsFollowRespawn}`];
+										}
+										term = pty.spawn(cmd, chosenArgs, { name: 'xterm-color', cols: 80, rows: 24, env: execEnv, cwd: projectDirLocal });
 									} catch (e) {
 										try { ws.send(JSON.stringify({ error: 'failed to spawn log follow' })); } catch (e2) {}
 										return;
 									}
 
-									// update lastDataAt on actual output
-									term.onData(d => { try { ws.send(d); lastDataAt = Date.now(); } catch (e) {} });
+                                    // update lastDataAt on actual output; clear pauseNotified so a future pause
+                                    // will notify once again
+                                    term.onData(d => { try { ws.send(d); lastDataAt = Date.now(); pauseNotified = false; } catch (e) {} });
 
 									// start idle monitor once
 									if (!monitorInterval) {
@@ -1980,11 +2011,22 @@ if (!process.env.SINGLE_RUN) {
 										}, 1000);
 									}
 
-									// when the follow process exits, notify the client but keep the WS open
+									// when the follow process exits, silently attempt to respawn after 3s
 									term.on('exit', (code, signal) => {
-										try { ws.send('\r\n\x1b[33mLog stream paused (container may have stopped) — reconnecting...\x1b[0m\r\n'); } catch (e) {}
-										// attempt to respawn after a short delay while ws still open
-										setTimeout(() => { try { if (!sessionClosed && ws && ws.readyState === 1) spawnFollow(); } catch (e) {} }, 1000);
+										try {
+											if (!pauseNotified) {
+												ws.send('\r\n\x1b[33mLog stream paused (container may have stopped)\x1b[0m\r\n');
+												pauseNotified = true;
+											}
+										} catch (e) {}
+										// Silent reconnect every 3 seconds; do not send repeated reconnect messages
+										// mark that subsequent spawns are respawns so they use --tail 0 / --since
+										firstRun = false;
+										setTimeout(() => {
+											try {
+												if (!sessionClosed && ws && ws.readyState === 1) spawnFollow();
+											} catch (e) {}
+										}, 3000);
 									});
 
 									// allow client resize messages to apply to the active term
@@ -2050,8 +2092,36 @@ if (!process.env.SINGLE_RUN) {
 							let term = null;
 							try { term = pty.spawn(cmd, ['-lc', tailCmd], { name: 'xterm-color', cols: 80, rows: 24, env: process.env, cwd: process.cwd() }); }
 							catch (e) { try { ws.send(JSON.stringify({ error: 'failed to spawn log stream' })); } catch(e2){} try { ws.close(); } catch(e3){} globalThis.activeTerminalCount = Math.max(0, (globalThis.activeTerminalCount||0) - 1); return; }
-							try { ws.send(`\r\n\x1b[36mFollowing nginx comm.log for IP ${rawIp} (last 500 lines then live)\x1b[0m\r\n`); } catch(e){}
-							term.onData(d => { try { ws.send(d); } catch(e){} });
+							try { ws.send(JSON.stringify({ info: `following`, ip: rawIp, note: 'initializing structured log stream' })); } catch(e){}
+							// Lightweight parser for the common nginx combined+upstream format used by comm.log
+							const parseLine = (line) => {
+								if (!line || typeof line !== 'string') return null;
+								// Example format (common):
+								// 78.153.140.224 - - [07/Sep/2025:08:22:34 +0700] "GET /dev/.env HTTP/1.1" 404 162 "-" "UA" "172.28.0.4:80"
+								const m = line.match(/^([^\s]+)\s+-\s+-\s+\[([^\]]+)\]\s+"([A-Z]+)\s+([^\s]+)\s+HTTP\/[\d.]+"\s+(\d{3})\s+(\d+)\s+"([^"]*)"\s+"([^"]*)"\s+"([^\"]+)"/);
+								if (!m) return { raw: line };
+								return {
+									remote: m[1],
+									time: m[2],
+									method: m[3],
+									path: m[4],
+									status: Number(m[5]),
+									size: Number(m[6]),
+									referer: m[7],
+									ua: m[8],
+									upstream: m[9]
+								};
+							};
+							// Send parsed JSON objects for each line
+							term.onData(d => {
+								try {
+									const lines = String(d).split(/\r?\n/).filter(Boolean);
+									for (const L of lines) {
+										const obj = parseLine(L);
+										if (obj) ws.send(JSON.stringify({ log: obj }));
+									}
+								} catch (e) { try { ws.send(JSON.stringify({ error: 'parse_error', detail: String(e) })); } catch(e2){} }
+							});
 							let sessionClosed = false;
 							const onCloseCleanup = () => { if (sessionClosed) return; sessionClosed = true; try { term.kill(); } catch(e){} try { globalThis.activeTerminalCount = Math.max(0, (globalThis.activeTerminalCount||0) - 1); } catch(e){} log('log stream closed, activeTerminalCount=' + globalThis.activeTerminalCount); };
 							term.on('exit', () => { onCloseCleanup(); try { ws.close(); } catch(e){} });

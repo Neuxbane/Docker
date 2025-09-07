@@ -535,7 +535,7 @@ function NotificationContainer({notifications, onRemove}){
   );
 }
 
-function ServiceEditor({svcName, svcData, onChange, onEditConfig, projectPath}){
+function ServiceEditor({svcName, svcData, onChange, onEditConfig, projectPath, availableImages = []}){
   // svcData.ports expected as array of strings or objects; normalize to objects { container, bind, host? }
   function normalizePorts(p){
     if (!p) return [];
@@ -558,6 +558,10 @@ function ServiceEditor({svcName, svcData, onChange, onEditConfig, projectPath}){
   const [networks, setNetworks] = useState(normalizeNetworks(svcData.networks || {}));
   const [availableNets, setAvailableNets] = useState([]);
   const [image, setImage] = useState(svcData.image || '');
+  const [useCustomImage, setUseCustomImage] = useState(() => {
+    const has = (svcData.image || '').trim();
+    return has && !availableImages.includes(has);
+  });
   const [volumes, setVolumes] = useState(Array.isArray(svcData.volumes) ? svcData.volumes.map(v=>String(v)) : []);
   // environmentInternal stores [{key:'FOO', value:'bar'}] for nicer UI editing
   const envToInternal = (env) => {
@@ -707,7 +711,26 @@ function ServiceEditor({svcName, svcData, onChange, onEditConfig, projectPath}){
 
       <div className="mb-3">
         <div className="text-sm text-gray-700">Image</div>
-        <input className="border rounded px-2 py-1 w-full" value={image} onChange={e=>updateImage(e.target.value)} placeholder="nginx:latest" />
+        {availableImages && availableImages.length > 0 && !useCustomImage ? (
+          <div className="flex gap-2 items-center">
+            <select className="border rounded px-2 py-1 w-full" value={availableImages.includes(image) ? image : ''} onChange={e=>{
+              const val = e.target.value;
+              if (val === '__custom__') { setUseCustomImage(true); return; }
+              updateImage(val);
+            }}>
+              <option value="">Select image</option>
+              {availableImages.map((img, i)=>(<option key={i} value={img}>{img}</option>))}
+              <option value="__custom__">Other (type manually)...</option>
+            </select>
+          </div>
+        ) : (
+          <div className="flex gap-2 items-center">
+            <input className="border rounded px-2 py-1 w-full" value={image} onChange={e=>updateImage(e.target.value)} placeholder="nginx:latest" />
+            {availableImages && availableImages.length > 0 && (
+              <button type="button" className="px-2 py-1 text-sm bg-gray-200 rounded" onClick={()=>setUseCustomImage(false)}>Select</button>
+            )}
+          </div>
+        )}
       </div>
       <div className="mb-3">
         <div className="text-sm text-gray-700">Restart policy</div>
@@ -951,7 +974,7 @@ function DynamicFields({svcData, onDynamicChange}){
   );
 }
 
-function EditorModal({path, data, onClose, onApply, onEditConfig, showNotification}){
+function EditorModal({path, data, onClose, onApply, onEditConfig, showNotification, availableImages = []}){
   const [local, setLocal] = useState(JSON.parse(JSON.stringify(data)));
   const [dirty, setDirty] = useState(false);
   const [statusMap, setStatusMap] = useState({});
@@ -965,14 +988,24 @@ function EditorModal({path, data, onClose, onApply, onEditConfig, showNotificati
   // logsModal removed: terminal popup provides realtime output
 
   useEffect(()=>{
-    // fetch status for each service
-    (async ()=>{
+    // fetch status for each service and refresh periodically so modal shows realtime status
+    let cancelled = false;
+    async function fetchAll(){
       const res = {};
       for (const svc of Object.keys(local.services||{})){
-        try { const r = await axios.get('/api/status', { params: { path, service: svc } }); res[svc] = r.data; } catch(e){ res[svc] = { error: String(e) }; }
+        try {
+          const r = await axios.get('/api/status', { params: { path, service: svc } });
+          res[svc] = r.data;
+        } catch(e){
+          res[svc] = { error: String(e) };
+        }
       }
-      setStatusMap(res);
-    })();
+      if (!cancelled) setStatusMap(res);
+    }
+
+    fetchAll();
+    const iv = setInterval(fetchAll, 3000);
+    return () => { cancelled = true; clearInterval(iv); };
   }, [path, local.services]);
 
   // helper: poll /api/status until the service reaches a non-transient state or timeout
@@ -1352,7 +1385,7 @@ function EditorModal({path, data, onClose, onApply, onEditConfig, showNotificati
                 </button>
               </div>
             </div>
-            <ServiceEditor svcName={svc} svcData={info} onChange={(changes)=>updateService(svc, changes)} onEditConfig={onEditConfig} projectPath={path} />
+            <ServiceEditor svcName={svc} svcData={info} onChange={(changes)=>updateService(svc, changes)} onEditConfig={onEditConfig} projectPath={path} availableImages={availableImages} />
           </div>
         ))}
 
@@ -1568,6 +1601,19 @@ function App(){
   const [chart, setChart] = useState(null);
   const [publicMapper, setPublicMapper] = useState({});
   const [statsLabels, setStatsLabels] = useState([]);
+  const availableImages = React.useMemo(() => {
+    const set = new Set();
+    try {
+      Object.values(mapper || {}).forEach(item => {
+        Object.values(item.services || {}).forEach(s => { if (s && s.image) set.add(String(s.image)); });
+      });
+    } catch(e) {}
+    try {
+      const remote = localStorage.getItem('remoteImages');
+      if (remote) JSON.parse(remote).forEach(name => set.add(String(name)));
+    } catch(e) {}
+    return Array.from(set).sort((a,b)=> a.localeCompare(b));
+  }, [mapper]);
 
   // Notifications globally disabled per user request: no-op
   function showNotification(message, type='info', timeout=4000){
@@ -1966,14 +2012,16 @@ function App(){
   <div className="mb-4">
   <button className="px-3 py-1 mr-2" onClick={()=>setTab('networks')}>Networks</button>
   <button className="px-3 py-1 mr-2" onClick={()=>setTab('projects')}>Projects</button>
+  <button className="px-3 py-1 mr-2" onClick={()=>setTab('images')}>Images</button>
   <button className="px-3 py-1" onClick={()=>setTab('nginx')}>Nginx</button>
   </div>
 
   {tab === 'projects' && (loading ? <div>Loading...</div> : <ProjectList mapper={mapper} onEdit={openEditor} onAdd={openAddModal} onRename={openRenameModal} onDelete={openDeleteModal} onAttach={handleAttach} />)}
 
   {tab === 'networks' && (loading ? <div>Loading...</div> : <NetworkList showNotification={showNotification} />)}
+  {tab === 'images' && (loading ? <div>Loading...</div> : <ImageList mapper={mapper} showNotification={showNotification} onOpenProject={openEditor} />)}
 
-  {editPath && <EditorModal path={editPath} data={mapper[editPath]} onClose={closeEditor} onApply={applyLocal} onEditConfig={openConfigFiles} showNotification={showNotification} />}
+  {editPath && <EditorModal path={editPath} data={mapper[editPath]} onClose={closeEditor} onApply={applyLocal} onEditConfig={openConfigFiles} showNotification={showNotification} availableImages={availableImages} />}
 
   {addModalOpen && <AddProjectModal onClose={closeAddModal} onAdd={addProject} mapper={mapper} />}
 
@@ -2459,6 +2507,198 @@ function NetworkList({ showNotification }){
       )}
       {editingNetwork && <NetworkEditModal network={editingNetwork} onClose={()=>setEditingNetwork(null)} onSave={load} showNotification={showNotification} />}
       {deletingNetwork && <DeleteNetworkModal network={deletingNetwork} onClose={()=>setDeletingNetwork(null)} onDelete={deleteNetwork} />}
+    </div>
+  );
+}
+
+function ImageDetailsModal({imageName, usage, onClose, onDelete, showNotification, services = [], onOpenProject}){
+  const [pulling, setPulling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  if (!imageName) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded w-1/2 p-4">
+        <div className="flex justify-between items-center mb-4">
+          <div className="text-lg font-semibold">Image: {imageName}</div>
+          <button className="text-sm text-gray-600" onClick={onClose}>Close</button>
+        </div>
+        <div className="mb-4">
+          <div className="text-sm text-gray-700 mb-2">Usage</div>
+          <div className="text-sm text-gray-600">Online services: <strong>{usage.online}</strong></div>
+          <div className="text-sm text-gray-600">Offline services: <strong>{usage.offline}</strong></div>
+          <div className="mt-3 text-xs text-gray-500">Use the global "Pull new image" control above to pull an image that is not currently listed. Delete will remove the image locally (backend must handle safety checks).</div>
+        </div>
+        <div className="mb-3">
+          {/* Group services by status then by project */}
+          {(() => {
+            if (!services || services.length===0) return <div className="text-sm text-gray-500">No services use this image.</div>;
+            const byStatus = { online: [], offline: [], unknown: [] };
+            services.forEach(s => {
+              const st = (s.status === 'running') ? 'online' : (s.status === 'stopped' ? 'offline' : 'unknown');
+              byStatus[st].push(s);
+            });
+            return ['online','offline','unknown'].map(statusKey => {
+              const list = byStatus[statusKey];
+              if (!list || list.length===0) return null;
+              // group by projectName
+              const byProject = {};
+              list.forEach(it => { if (!byProject[it.projectName]) byProject[it.projectName] = []; byProject[it.projectName].push(it); });
+              return (
+                <div key={statusKey} className="mb-2">
+                  <div className="font-medium capitalize">{statusKey} ({list.length})</div>
+                  <div className="mt-1">
+                    {Object.entries(byProject).map(([proj, items])=> (
+                      <div key={proj} className="border rounded p-2 mt-2">
+                        <div className="text-sm font-semibold">{proj}</div>
+                        <div className="mt-1 text-sm">
+                          {items.map(it=> (
+                            <div key={it.projectPath + '::' + it.service} className="flex justify-between items-center py-1">
+                              <div>
+                                <a href="#" onClick={(e)=>{ e.preventDefault(); try{ onOpenProject && onOpenProject(it.projectPath); } catch(e){}; onClose(); }} className="text-blue-600 hover:underline">{it.service}</a>
+                              </div>
+                              <div className="text-xs text-gray-500">{it.status}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button className={`px-3 py-1 rounded ${deleting ? 'bg-gray-400' : 'bg-red-600 text-white'}`} onClick={async ()=>{
+            if (deleting) return;
+            if (!window.confirm('Delete image '+imageName+'? This may fail if image is in use.')) return;
+            try { setDeleting(true); await onDelete(imageName); showNotification && showNotification('Delete requested for '+imageName,'info'); } catch(e){ showNotification && showNotification('Delete failed: '+String(e),'error'); } finally { setDeleting(false); }
+          }} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button>
+          <button className="px-3 py-1 bg-gray-200 rounded" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImageList({ mapper, showNotification, onOpenProject }){
+  const [images, setImages] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [newImage, setNewImage] = useState('');
+  const [pulling, setPulling] = useState(false);
+  const [remoteImages, setRemoteImages] = useState(() => {
+    try { const v = localStorage.getItem('remoteImages'); return v ? JSON.parse(v) : []; } catch(e){ return []; }
+  });
+
+  useEffect(()=>{ buildImages(); }, [mapper]);
+
+  function buildImages(){
+    // map image -> { online: count, offline: count, services: [{project, service, status}] }
+    const map = {};
+    Object.entries(mapper||{}).forEach(([path, item])=>{
+      const projectName = path.split('/').pop();
+      const projectPath = path;
+      Object.entries(item.services||{}).forEach(([svc, sdata])=>{
+        const img = (sdata && sdata.image) ? sdata.image : '(none)';
+        if (!map[img]) map[img] = { online:0, offline:0, services: [] };
+        const status = (sdata && sdata.status) || 'unknown';
+        if (status === 'running') map[img].online += 1; else map[img].offline += 1;
+        map[img].services.push({ projectName, projectPath, service: svc, status });
+      });
+    });
+    const arr = Object.entries(map).map(([name, data])=> ({ name, ...data }));
+    setImages(arr.sort((a,b)=> b.online + b.offline - (a.online + a.offline)));
+  }
+
+  async function handlePull(image){
+  try { await axios.post('/api/images/pull', { image }); } catch(e){ throw e; }
+  }
+
+  async function handleDelete(image){
+    try { await axios.post('/api/images/delete', { image }); } catch(e){ throw e; }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold">Images</h2>
+        <div className="flex items-center gap-2">
+          <input value={newImage} onChange={e=>setNewImage(e.target.value)} placeholder="image (e.g. nginx:latest)" className="border px-2 py-1 rounded" />
+          <button className={`px-3 py-1 rounded ${pulling ? 'bg-gray-400' : 'bg-blue-600 text-white'}`} onClick={async ()=>{
+            const img = String(newImage || '').trim();
+            if (!img) return;
+            // check not already present locally or in remote list
+            if (images.some(i => i.name === img) || remoteImages.includes(img)) { showNotification && showNotification('Image already exists in list','error'); return; }
+            try {
+              setPulling(true);
+              await handlePull(img);
+              // add to remote images list and persist
+              setRemoteImages(r => {
+                try {
+                  const next = Array.isArray(r) ? r.slice() : [];
+                  if (!next.includes(img)) next.push(img);
+                  localStorage.setItem('remoteImages', JSON.stringify(next));
+                  return next;
+                } catch(e){ return r; }
+              });
+              showNotification && showNotification('Pull requested for '+img,'info');
+              setNewImage('');
+            } catch(e){ showNotification && showNotification('Pull failed: '+String(e),'error'); } finally { setPulling(false); }
+          }} disabled={pulling}>{pulling ? 'Pulling...' : 'Pull new image'}</button>
+        </div>
+      </div>
+      {images.length===0 && <div className="text-gray-500">No images found</div>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Local Images</h3>
+          {images.length===0 ? <div className="text-gray-500">No local images found</div> : (
+            <div className="space-y-2">
+              {images.map(img => (
+                <div key={img.name} className="bg-white shadow rounded p-4 cursor-pointer" onClick={()=>setSelected({ ...img, _source: 'local' })}>
+                  <div className="font-medium truncate">{img.name}</div>
+                  <div className="text-xs text-gray-500 mt-1">Total services: {img.online + img.offline}</div>
+                  <div className="mt-2 flex gap-2">
+                    <div className="text-xs px-2 py-1 rounded bg-green-100 text-green-800">Online: {img.online}</div>
+                    <div className="text-xs px-2 py-1 rounded bg-red-100 text-red-800">Offline: {img.offline}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Remote Images (pulled)</h3>
+          {remoteImages.length===0 ? <div className="text-gray-500">No remote images pulled</div> : (
+            <div className="space-y-2">
+              {remoteImages.map(name => (
+                <div key={name} className="bg-white shadow rounded p-4 cursor-pointer" onClick={()=>setSelected({ name, online:0, offline:0, services: [], _source: 'remote' })}>
+                  <div className="font-medium truncate">{name}</div>
+                  <div className="text-xs text-gray-500 mt-1">Source: registry</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {selected && (
+        <ImageDetailsModal
+          imageName={selected.name}
+          usage={{ online: selected.online || 0, offline: selected.offline || 0 }}
+          onClose={()=>{ setSelected(null); }}
+          onDelete={async (img)=>{
+            try { await handleDelete(img); // remove from remote list if present
+              setRemoteImages(r => { const next = r.filter(x => x !== img); try { localStorage.setItem('remoteImages', JSON.stringify(next)); } catch(e){} return next; });
+            } catch(e) { throw e; }
+          }}
+          services={selected.services || []}
+          onOpenProject={onOpenProject}
+          showNotification={showNotification}
+        />
+      )}
     </div>
   );
 }

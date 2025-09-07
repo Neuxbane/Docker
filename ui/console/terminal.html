@@ -52,6 +52,8 @@
 
         term.open(document.getElementById('terminal'));
         
+        let ws = null;
+
         function fit(){ 
           try {
             fitAddon.fit();
@@ -60,7 +62,7 @@
             const dims = { cols: term.cols, rows: term.rows };
             const resizeMessage = JSON.stringify({ type: 'resize', ...dims });
             // Only send if the websocket is open
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(resizeMessage);
             }
           } catch(e) {
@@ -86,51 +88,124 @@
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const params = { file, service };
   if (action) params.action = action;
-  // include ip when present so backend receives it
   if (ip) params.ip = ip;
   const qs = new URLSearchParams(params).toString();
   const wsUrl = protocol + '://' + window.location.host + '/ws/attach?' + qs;
-        const ws = new WebSocket(wsUrl);
-        ws.binaryType = 'arraybuffer';
-        ws.onopen = () => { 
-          term.write('\u001b[32mConnected to ' + service + '\u001b[0m\r\n'); 
-          // Fit again in case of any layout shifts on connect
-          fit();
-        };
-        ws.onmessage = ev => {
-          const d = ev.data;
-          if(typeof d === 'string'){
-            if(d.startsWith('{') && d.includes('error')){
-              try { const j = JSON.parse(d); if(j.error){ term.write('\r\n\u001b[31m' + j.error + '\u001b[0m\r\n'); return; } } catch(e){}
-            }
-            term.write(d);
-          } else {
-            term.write(new TextDecoder().decode(d));
-          }
-        };
-        ws.onclose = () => { 
-          term.write('\r\n\u001b[31mConnection closed\u001b[0m'); 
-          try {
-            // show status and start a 5s countdown to close the window
-            let seconds = 5;
-            try { statusEl.textContent = 'Connection closed — closing in ' + seconds + 's'; } catch(e){}
-            const countdown = setInterval(() => {
-              seconds -= 1;
-              try { statusEl.textContent = 'Connection closed — closing in ' + seconds + 's'; } catch(e){}
-              if (seconds <= 0) clearInterval(countdown);
-            }, 1000);
-            // attempt to close the window after 5 seconds
-            setTimeout(() => {
-              try { window.close(); } catch(e){}
-            }, 5000);
-          } catch(e){}
-        };
-        // manual close button (some browsers block window.close() for non-opened windows)
-        try {
-          const closeBtn = document.getElementById('closeBtn');
-          if (closeBtn) closeBtn.addEventListener('click', ()=>{ try { window.close(); } catch(e){} });
-        } catch(e){}
-        term.onData(data => { try { ws.send(data); } catch(e){} });
+
+  // If action=log, render a cards UI and consume JSON log events from WS
+  if (action === 'log') {
+    // replace terminal area with a card list container
+    const container = document.getElementById('terminal');
+    container.innerHTML = `
+      <div style="height:100%; display:flex; flex-direction:column;">
+        <div style="padding:6px 8px; border-bottom:1px solid #222; display:flex; justify-content:space-between; align-items:center;">
+          <div style="color:#7fffd4;">Following nginx comm.log for IP ${ip}</div>
+          <div style="display:flex; gap:8px;">
+            <button id="pauseBtn">Pause</button>
+            <button id="clearBtn">Clear</button>
+            <button id="closeBtnPopup">Close</button>
+          </div>
+        </div>
+        <div id="cardList" style="flex:1; overflow:auto; padding:8px; display:flex; flex-direction:column; gap:8px;"></div>
+      </div>`;
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => { statusEl.textContent = 'Connected — receiving structured logs'; };
+    let paused = false;
+    const cardList = document.getElementById('cardList');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const closeBtnPopup = document.getElementById('closeBtnPopup');
+    pauseBtn.addEventListener('click', () => { paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; });
+    clearBtn.addEventListener('click', () => { cardList.innerHTML = ''; });
+    closeBtnPopup.addEventListener('click', () => { try { window.close(); } catch(e){} });
+
+    function renderCard(obj) {
+      const div = document.createElement('div');
+      div.style.background = '#111';
+      div.style.border = '1px solid #333';
+      div.style.padding = '8px';
+      div.style.cursor = 'pointer';
+      div.innerHTML = `<div style="display:flex; justify-content:space-between;"><div style="font-weight:600; color:#9ad;">${obj.remote || '-'} -> ${obj.upstream || ip}</div><div style="color:${obj.status && obj.status>=200 && obj.status<400 ? '#7fffd4' : '#ff9d9d'}">${obj.status || '-'}</div></div><div style="font-size:12px; color:#aaa;">${obj.method || ''} ${obj.path || ''} • ${obj.time || ''}</div>`;
+      div.addEventListener('click', () => {
+        // show modal with details
+        const modal = document.createElement('div');
+        modal.style.position = 'fixed'; modal.style.left = 0; modal.style.top = 0; modal.style.right = 0; modal.style.bottom = 0; modal.style.background = 'rgba(0,0,0,0.6)'; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.style.zIndex = 9999;
+        const box = document.createElement('div'); box.style.background='#fff'; box.style.color='#000'; box.style.padding='12px'; box.style.maxWidth='90%'; box.style.maxHeight='90%'; box.style.overflow='auto';
+        box.innerHTML = `<h3>Request details</h3><pre style="white-space:pre-wrap;">${JSON.stringify(obj, null, 2)}</pre><div style="text-align:right; margin-top:8px;"><button id='closeDetail'>Close</button></div>`;
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+        document.getElementById('closeDetail').addEventListener('click', ()=>{ document.body.removeChild(modal); });
+      });
+      cardList.prepend(div);
+      // keep max 200 cards
+      while (cardList.children.length > 200) cardList.removeChild(cardList.lastChild);
+    }
+
+    ws.onmessage = (ev) => {
+      try {
+        const d = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
+        // expect JSON messages { log: {...} } or { info:... }
+        const j = JSON.parse(d);
+        if (j && j.log) {
+          if (!paused) renderCard(j.log);
+        } else if (j && j.info) {
+          // optional info messages
+          const infoDiv = document.createElement('div'); infoDiv.style.color='#7fffd4'; infoDiv.textContent = j.note || j.info || ''; cardList.prepend(infoDiv);
+        } else if (j && j.error) {
+          const err = document.createElement('div'); err.style.color='#ff9d9d'; err.textContent = (j.error + (j.detail?': '+j.detail:'')); cardList.prepend(err);
+        }
+      } catch (e) {
+        // ignore malformed
+      }
+    };
+
+    ws.onclose = () => { statusEl.textContent = 'Connection closed'; };
+    return; // do not initialize xterm in this branch
+  }
+
+  // Non-log branch: initialize websocket and pipe to xterm
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    try { term.write('\x1b[32mConnected to ' + service + '\x1b[0m\r\n'); } catch(e){}
+    try { fit(); } catch(e){}
+  };
+  ws.onmessage = (ev) => {
+    try {
+      const data = ev.data;
+      if (typeof data === 'string') {
+        // some server messages are JSON { error:.. }
+        if (data.startsWith('{') && data.includes('error')) {
+          try { const j = JSON.parse(data); if (j && j.error) { term.write('\r\n\x1b[31m' + j.error + '\x1b[0m\r\n'); return; } } catch(e){}
+        }
+        term.write(data);
+      } else {
+        term.write(new TextDecoder().decode(data));
+      }
+    } catch (e) { }
+  };
+  ws.onclose = () => {
+    term.write('\r\n\x1b[31mConnection closed\x1b[0m');
+    try {
+      let seconds = 5;
+      try { statusEl.textContent = 'Connection closed — closing in ' + seconds + 's'; } catch(e){}
+      const countdown = setInterval(() => {
+        seconds -= 1;
+        try { statusEl.textContent = 'Connection closed — closing in ' + seconds + 's'; } catch(e){}
+        if (seconds <= 0) clearInterval(countdown);
+      }, 1000);
+      setTimeout(() => { try { window.close(); } catch(e){} }, 5000);
+    } catch(e){}
+  };
+
+  // manual close button (some browsers block window.close() for non-opened windows)
+  try {
+    const closeBtnTop = document.getElementById('closeBtn');
+    if (closeBtnTop) closeBtnTop.addEventListener('click', ()=>{ try { window.close(); } catch(e){} });
+  } catch(e){}
+
+  term.onData(data => { try { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); } catch(e){} });
       })();
     </script>
   </body>
