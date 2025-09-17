@@ -68,7 +68,7 @@ RUN echo "echo 'Start service here'" > /init.sh \
 
 # Configure SSH
 RUN mkdir /var/run/sshd \
-    && echo 'root:@/dev/null' | chpasswd \
+    && echo 'root:not@pa55word' | chpasswd \
     && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
     && sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config \
     && mkdir -p /root/.ssh \
